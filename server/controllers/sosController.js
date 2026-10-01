@@ -1,188 +1,981 @@
 const mongoose = require("mongoose");
+
 const EmergencyRequest = require("../models/EmergencyRequest");
 const Hospital = require("../models/Hospital");
+const User = require("../models/User");
 
-const VALID_TARGETS = ["hospital", "police", "firestation"];
+const VALID_TARGETS = [
+  "hospital",
+  "police",
+  "firestation",
+];
 
-const createSOS = async (req, res) => {
-  try {
-    const { longitude, latitude, type, targets } = req.body;
-
-    const cleanTargets = Array.isArray(targets)
-      ? targets.filter((t) => VALID_TARGETS.includes(t))
-      : [];
-    const finalTargets = cleanTargets.length ? cleanTargets : ["hospital"];
-
-    let nearestHospital = null;
-    if (finalTargets.includes("hospital")) {
-      // No $maxDistance cap here on purpose — in a real emergency, "the nearest
-      // hospital is 40km away" is far more useful than "no hospital found".
-      // (Find Hospitals, the browsing page, keeps its 10km "nearby" radius —
-      // this is specifically the emergency-assignment path.)
-      nearestHospital = await Hospital.findOne({
-        location: { $near: { $geometry: { type: "Point", coordinates: [longitude, latitude] } } },
-      });
-    }
-
-    const emergencyRequest = await EmergencyRequest.create({
-      citizenId: req.userId,
-      type: type || "medical",
-      location: { type: "Point", coordinates: [longitude, latitude] },
-      assignedHospitalId: nearestHospital ? nearestHospital._id : null,
-      targets: finalTargets,
-    });
-
-    res.status(201).json({
-      message: "SOS request created successfully",
-      emergencyRequest,
-      nearestHospital: finalTargets.includes("hospital")
-        ? nearestHospital || "No hospital is registered on the platform yet"
-        : "Hospital was not alerted for this request",
-    });
-  } catch (err) {
-    res.status(500).json({ message: "Something went wrong", error: err.message });
-  }
-};
+const RESPONDER_ROLES = [
+  "hospital",
+  "police",
+  "firestation",
+];
 
 const DEFAULT_SERVICE_RADIUS_KM = 25;
 
-/**
- * Only requests where the civilian chose to alert Hospital, scoped to this
- * hospital's own service radius once it has claimed a Hospital record (via
- * Bed Availability). Accounts that haven't claimed one yet still see every
- * hospital-targeted request, same as before — there's no location to scope by.
- */
-const listSOS = async (req, res) => {
-  try {
-    const myHospital = await Hospital.findOne({ ownerId: req.user._id });
-    const filter = { targets: "hospital" };
+function getIO(req) {
+  return req.app.get("io");
+}
 
-    if (myHospital) {
-      const radiusKm = req.user.serviceRadiusKm || DEFAULT_SERVICE_RADIUS_KM;
-      filter.location = {
-        $near: { $geometry: myHospital.location, $maxDistance: radiusKm * 1000 },
-      };
-    }
+function emitToUser(req, userId, event, data) {
+  const io = getIO(req);
 
-    const requests = await EmergencyRequest.find(filter)
-      .populate("citizenId", "name phone bloodGroup")
-      .populate("assignedHospitalId", "name")
-      .sort({ createdAt: -1 })
-      .limit(200);
-
-    res.json({ requests });
-  } catch (err) {
-    res.status(500).json({ message: "Something went wrong", error: err.message });
+  if (!io || !userId) {
+    return;
   }
-};
 
-/** A civilian's own SOS history, newest first. */
-const myRequests = async (req, res) => {
-  try {
-    const requests = await EmergencyRequest.find({ citizenId: req.userId })
-      .populate("assignedHospitalId", "name phone address")
-      .sort({ createdAt: -1 });
+  io.to(`user:${userId.toString()}`).emit(
+    event,
+    data
+  );
+}
 
-    res.json({ requests });
-  } catch (err) {
-    res.status(500).json({ message: "Something went wrong", error: err.message });
+function emitToRole(req, role, event, data) {
+  const io = getIO(req);
+
+  if (!io || !role) {
+    return;
   }
-};
 
-/** Only the citizen who raised it can cancel, and only while it's still pending. */
-const cancelSOS = async (req, res) => {
-  try {
-    const { id } = req.params;
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(404).json({ message: "Request not found" });
-    }
+  io.to(`role:${role}`).emit(event, data);
+}
 
-    const request = await EmergencyRequest.findOne({ _id: id, citizenId: req.userId });
-    if (!request) {
-      return res.status(404).json({ message: "Request not found" });
-    }
-    if (request.status !== "pending") {
-      return res.status(400).json({ message: "This request has already been responded to and can no longer be cancelled" });
-    }
+function emitToSOS(req, sosId, event, data) {
+  const io = getIO(req);
 
-    request.status = "cancelled";
-    await request.save();
-
-    res.json({ message: "SOS request cancelled", request });
-  } catch (err) {
-    res.status(500).json({ message: "Something went wrong", error: err.message });
+  if (!io || !sosId) {
+    return;
   }
-};
 
-const RESPONDER_ROLES = ["hospital", "police", "firestation"];
+  io.to(`sos:${sosId.toString()}`).emit(
+    event,
+    data
+  );
+}
 
-// What status a request must already be in for each transition to be valid —
-// enforced atomically below so two responders racing to act on the same
-// request can't both "win", and a resolved/declined request can't be
-// silently flipped back.
-const REQUIRED_PRIOR_STATUS = { accepted: "pending", declined: "pending", resolved: "accepted" };
-
-/**
- * Any of Hospital/Police/Fire Station can act on a request, but only one
- * targeted at their own service — a fire station can't accept a
- * hospital-only alert just because it happens to see it somewhere.
- *
- * The find-and-update is a single atomic operation filtered on the prior
- * status: if two responders race to accept the same request, only the first
- * `findOneAndUpdate` actually matches (the second sees the now-changed
- * status and gets a clean 409, instead of silently overwriting the first).
- */
-const setStatus = (status) => async (req, res) => {
+const createSOS = async (req, res) => {
   try {
-    const { id } = req.params;
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(404).json({ message: "Request not found" });
-    }
-    if (!RESPONDER_ROLES.includes(req.user.role)) {
-      return res.status(403).json({ message: "Only response services can update a request" });
-    }
+    const {
+      longitude,
+      latitude,
+      type,
+      targets,
+      emergencyNote,
+      medicalIdShared,
+    } = req.body;
 
-    const update = {
-      status,
-      respondedBy: req.user._id,
-      respondedByRole: req.user.role,
-    };
-    if (status === "accepted" && req.body.etaMinutes !== undefined) {
-      const eta = Number(req.body.etaMinutes);
-      if (Number.isFinite(eta) && eta >= 0) update.etaMinutes = eta;
-    }
+    const lat = Number(latitude);
+    const lng = Number(longitude);
 
-    const request = await EmergencyRequest.findOneAndUpdate(
-      { _id: id, targets: req.user.role, status: REQUIRED_PRIOR_STATUS[status] },
-      update,
-      { new: true }
-    ).populate([
-      { path: "citizenId", select: "name phone bloodGroup" },
-      { path: "assignedHospitalId", select: "name" },
-      { path: "respondedBy", select: "name orgName" },
-    ]);
-
-    if (!request) {
-      const stillExists = await EmergencyRequest.exists({ _id: id, targets: req.user.role });
-      return res.status(stillExists ? 409 : 404).json({
-        message: stillExists
-          ? "This request was already updated by someone else — refresh and try again."
-          : "Request not found",
+    if (
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lng) ||
+      lat < -90 ||
+      lat > 90 ||
+      lng < -180 ||
+      lng > 180
+    ) {
+      return res.status(400).json({
+        message: "Invalid location coordinates",
       });
     }
 
-    res.json({ message: `Request marked as ${status}`, request });
+    const cleanTargets = Array.isArray(targets)
+      ? targets.filter((target) =>
+          VALID_TARGETS.includes(target)
+        )
+      : [];
+
+    const finalTargets = cleanTargets.length
+      ? [...new Set(cleanTargets)]
+      : ["hospital"];
+
+    let nearestHospital = null;
+
+    if (finalTargets.includes("hospital")) {
+      nearestHospital =
+        await Hospital.findOne({
+          location: {
+            $near: {
+              $geometry: {
+                type: "Point",
+                coordinates: [lng, lat],
+              },
+            },
+          },
+        });
+    }
+
+    let medicalSnapshot;
+
+    if (medicalIdShared) {
+      const user = await User.findById(
+        req.userId
+      ).lean();
+
+      if (user) {
+        medicalSnapshot = {
+          bloodGroup: user.bloodGroup,
+          allergies: user.allergies || [],
+          medicalHistory:
+            user.medicalHistory || [],
+          emergencyContacts:
+            user.emergencyContacts || [],
+        };
+      }
+    }
+
+    const responses = finalTargets.map(
+      (service) => ({
+        service,
+        status: "pending",
+      })
+    );
+
+    const emergencyRequest =
+      await EmergencyRequest.create({
+        citizenId: req.userId,
+
+        type: type || "medical",
+
+        emergencyNote:
+          emergencyNote || "",
+
+        location: {
+          type: "Point",
+          coordinates: [lng, lat],
+        },
+
+        assignedHospitalId:
+          nearestHospital?._id || null,
+
+        targets: finalTargets,
+
+        responses,
+
+        medicalIdShared:
+          Boolean(medicalIdShared),
+
+        medicalSnapshot,
+      });
+
+    const populatedRequest =
+      await EmergencyRequest.findById(
+        emergencyRequest._id
+      )
+        .populate(
+          "citizenId",
+          "name phone bloodGroup"
+        )
+        .populate(
+          "assignedHospitalId",
+          "name phone address"
+        );
+
+    const socketPayload = {
+      message: "New emergency SOS received",
+      request: populatedRequest,
+    };
+
+    for (const target of finalTargets) {
+      emitToRole(
+        req,
+        target,
+        "sos:new",
+        socketPayload
+      );
+    }
+
+    res.status(201).json({
+      message:
+        "SOS request created successfully",
+
+      emergencyRequest,
+
+      nearestHospital:
+        finalTargets.includes("hospital")
+          ? nearestHospital ||
+            "No hospital is registered on the platform yet"
+          : "Hospital was not alerted for this request",
+    });
   } catch (err) {
-    res.status(500).json({ message: "Something went wrong", error: err.message });
+    console.error(
+      "Create SOS error:",
+      err
+    );
+
+    res.status(500).json({
+      message: "Something went wrong",
+      error: err.message,
+    });
   }
 };
+
+const listSOS = async (req, res) => {
+  try {
+    const role = req.user.role;
+
+    if (!RESPONDER_ROLES.includes(role)) {
+      return res.status(403).json({
+        message:
+          "Only response services can view incoming SOS alerts",
+      });
+    }
+
+    const filter = {
+      "responses.service": role,
+      "responses.status": {
+        $in: ["pending", "accepted"],
+      },
+    };
+
+    if (role === "hospital") {
+      const myHospital =
+        await Hospital.findOne({
+          ownerId: req.user._id,
+        });
+
+      if (myHospital) {
+        const radiusKm =
+          req.user.serviceRadiusKm ||
+          DEFAULT_SERVICE_RADIUS_KM;
+
+        filter.location = {
+          $near: {
+            $geometry:
+              myHospital.location,
+            $maxDistance:
+              radiusKm * 1000,
+          },
+        };
+      }
+    }
+
+    const requests =
+      await EmergencyRequest.find(filter)
+        .populate(
+          "citizenId",
+          "name phone bloodGroup"
+        )
+        .populate(
+          "assignedHospitalId",
+          "name phone address"
+        )
+        .populate(
+          "responses.responder",
+          "name orgName phone role"
+        )
+        .sort({
+          createdAt: -1,
+        })
+        .limit(200);
+
+    const result = requests.map(
+      (request) => {
+        const response =
+          request.responses.find(
+            (item) =>
+              item.service === role
+          );
+
+        return {
+          ...request.toObject(),
+
+          responderResponse:
+            response || null,
+        };
+      }
+    );
+
+    res.json({
+      requests: result,
+    });
+  } catch (err) {
+    console.error(
+      "List SOS error:",
+      err
+    );
+
+    res.status(500).json({
+      message: "Something went wrong",
+      error: err.message,
+    });
+  }
+};
+
+const myRequests = async (req, res) => {
+  try {
+    const requests =
+      await EmergencyRequest.find({
+        citizenId: req.userId,
+      })
+        .populate(
+          "assignedHospitalId",
+          "name phone address"
+        )
+        .populate(
+          "responses.responder",
+          "name orgName phone role"
+        )
+        .sort({
+          createdAt: -1,
+        });
+
+    res.json({
+      requests,
+    });
+  } catch (err) {
+    console.error(
+      "My SOS requests error:",
+      err
+    );
+
+    res.status(500).json({
+      message: "Something went wrong",
+      error: err.message,
+    });
+  }
+};
+
+const cancelSOS = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(404).json({
+        message: "Request not found",
+      });
+    }
+
+    const request =
+      await EmergencyRequest.findOne({
+        _id: id,
+        citizenId: req.userId,
+      });
+
+    if (!request) {
+      return res.status(404).json({
+        message: "Request not found",
+      });
+    }
+
+    if (request.status !== "pending") {
+      return res.status(400).json({
+        message:
+          "This request can no longer be cancelled",
+      });
+    }
+
+    request.status = "cancelled";
+    request.cancelledAt = new Date();
+
+    request.responses.forEach(
+      (response) => {
+        if (
+          response.status === "pending"
+        ) {
+          response.status = "declined";
+        }
+      }
+    );
+
+    await request.save();
+
+    const payload = {
+      message: "SOS request cancelled",
+      request,
+      status: "cancelled",
+    };
+
+    emitToUser(
+      req,
+      request.citizenId,
+      "sos:update",
+      payload
+    );
+
+    emitToSOS(
+      req,
+      request._id,
+      "sos:update",
+      payload
+    );
+
+    for (const response of request.responses) {
+      emitToRole(
+        req,
+        response.service,
+        "sos:update",
+        payload
+      );
+    }
+
+    res.json({
+      message: "SOS request cancelled",
+      request,
+    });
+  } catch (err) {
+    console.error(
+      "Cancel SOS error:",
+      err
+    );
+
+    res.status(500).json({
+      message: "Something went wrong",
+      error: err.message,
+    });
+  }
+};
+
+const updateOverallStatus = (request) => {
+  const responses =
+    request.responses || [];
+
+  if (request.status === "cancelled") {
+    return;
+  }
+
+  const hasAccepted =
+    responses.some(
+      (response) =>
+        response.status === "accepted"
+    );
+
+  const hasResolved =
+    responses.some(
+      (response) =>
+        response.status === "resolved"
+    );
+
+  const hasPending =
+    responses.some(
+      (response) =>
+        response.status === "pending"
+    );
+
+  const allFinished =
+    responses.length > 0 &&
+    responses.every(
+      (response) =>
+        response.status ===
+          "resolved" ||
+        response.status ===
+          "declined"
+    );
+
+  if (
+    allFinished &&
+    hasResolved
+  ) {
+    request.status = "resolved";
+
+    request.resolvedAt =
+      request.resolvedAt ||
+      new Date();
+
+    return;
+  }
+
+  if (hasAccepted) {
+    request.status = "accepted";
+    return;
+  }
+
+  if (hasPending) {
+    request.status = "pending";
+    return;
+  }
+
+  request.status = "pending";
+};
+
+const acceptSOS = async (req, res) => {
+  try {
+    await updateResponderResponse(
+      req,
+      res,
+      "accepted"
+    );
+  } catch (err) {
+    console.error(
+      "Accept SOS error:",
+      err
+    );
+
+    res.status(500).json({
+      message: "Something went wrong",
+      error: err.message,
+    });
+  }
+};
+
+const declineSOS = async (req, res) => {
+  try {
+    await updateResponderResponse(
+      req,
+      res,
+      "declined"
+    );
+  } catch (err) {
+    console.error(
+      "Decline SOS error:",
+      err
+    );
+
+    res.status(500).json({
+      message: "Something went wrong",
+      error: err.message,
+    });
+  }
+};
+
+const resolveSOS = async (req, res) => {
+  try {
+    await updateResponderResponse(
+      req,
+      res,
+      "resolved"
+    );
+  } catch (err) {
+    console.error(
+      "Resolve SOS error:",
+      err
+    );
+
+    res.status(500).json({
+      message: "Something went wrong",
+      error: err.message,
+    });
+  }
+};
+
+const updateResponderResponse = async (
+  req,
+  res,
+  newStatus
+) => {
+  const { id } = req.params;
+  const role = req.user.role;
+
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(404).json({
+      message: "Request not found",
+    });
+  }
+
+  if (!RESPONDER_ROLES.includes(role)) {
+    return res.status(403).json({
+      message:
+        "Only response services can update SOS requests",
+    });
+  }
+
+  const request =
+    await EmergencyRequest.findById(id);
+
+  if (!request) {
+    return res.status(404).json({
+      message: "Request not found",
+    });
+  }
+
+  const response =
+    request.responses.find(
+      (item) =>
+        item.service === role
+    );
+
+  if (!response) {
+    return res.status(403).json({
+      message:
+        "This SOS was not sent to your service",
+    });
+  }
+
+  if (newStatus === "accepted") {
+    if (response.status !== "pending") {
+      return res.status(409).json({
+        message:
+          "Your service has already responded to this SOS",
+      });
+    }
+
+    response.status = "accepted";
+
+    response.responder =
+      req.user._id;
+
+    response.responderName =
+      req.user.name;
+
+    response.responderOrganisation =
+      req.user.orgName;
+
+    response.responderPhone =
+      req.user.phone;
+
+    response.acceptedAt =
+      new Date();
+
+    if (
+      req.body.etaMinutes !==
+      undefined
+    ) {
+      const eta = Number(
+        req.body.etaMinutes
+      );
+
+      if (
+        Number.isFinite(eta) &&
+        eta >= 0
+      ) {
+        response.etaMinutes = eta;
+
+        response.estimatedArrivalAt =
+          new Date(
+            Date.now() +
+              eta *
+                60 *
+                1000
+          );
+      }
+    }
+
+    const lat = Number(
+      req.body.latitude
+    );
+
+    const lng = Number(
+      req.body.longitude
+    );
+
+    if (
+      Number.isFinite(lat) &&
+      Number.isFinite(lng) &&
+      lat >= -90 &&
+      lat <= 90 &&
+      lng >= -180 &&
+      lng <= 180
+    ) {
+      response.responderLocation = {
+        type: "Point",
+        coordinates: [lng, lat],
+      };
+
+      response.responderLocationUpdatedAt =
+        new Date();
+    }
+  }
+
+  if (newStatus === "declined") {
+    if (response.status !== "pending") {
+      return res.status(409).json({
+        message:
+          "Your service has already responded to this SOS",
+      });
+    }
+
+    response.status = "declined";
+
+    response.responder =
+      req.user._id;
+
+    response.responderName =
+      req.user.name;
+
+    response.responderOrganisation =
+      req.user.orgName;
+
+    response.responderPhone =
+      req.user.phone;
+  }
+
+  if (newStatus === "resolved") {
+    if (response.status !== "accepted") {
+      return res.status(409).json({
+        message:
+          "Only an accepted SOS can be resolved",
+      });
+    }
+
+    response.status = "resolved";
+
+    response.resolvedAt =
+      new Date();
+  }
+
+  updateOverallStatus(request);
+
+  const activeResponse =
+    request.responses.find(
+      (item) =>
+        item.status === "accepted"
+    );
+
+  if (activeResponse) {
+    request.respondedBy =
+      activeResponse.responder;
+
+    request.respondedByRole =
+      activeResponse.service;
+
+    request.responderName =
+      activeResponse.responderName;
+
+    request.responderOrganisation =
+      activeResponse.responderOrganisation;
+
+    request.responderPhone =
+      activeResponse.responderPhone;
+
+    request.etaMinutes =
+      activeResponse.etaMinutes;
+
+    request.estimatedArrivalAt =
+      activeResponse.estimatedArrivalAt;
+
+    request.responderLocation =
+      activeResponse.responderLocation;
+
+    request.responderLocationUpdatedAt =
+      activeResponse.responderLocationUpdatedAt;
+
+    request.acceptedAt =
+      activeResponse.acceptedAt;
+  }
+
+  await request.save();
+
+  const updatedRequest =
+    await EmergencyRequest.findById(
+      request._id
+    )
+      .populate(
+        "citizenId",
+        "name phone bloodGroup"
+      )
+      .populate(
+        "assignedHospitalId",
+        "name phone address"
+      )
+      .populate(
+        "responses.responder",
+        "name orgName phone role"
+      );
+
+  const updatedResponse =
+    updatedRequest.responses.find(
+      (item) =>
+        item.service === role
+    );
+
+  const requestObject =
+    updatedRequest.toObject();
+
+  const socketPayload = {
+    message:
+      `SOS ${newStatus} by ${role}`,
+    request: {
+      ...requestObject,
+      responderResponse:
+        updatedResponse || null,
+    },
+    status:
+      updatedRequest.status,
+    service: role,
+    responseStatus: newStatus,
+  };
+
+  emitToUser(
+    req,
+    updatedRequest.citizenId?._id ||
+      updatedRequest.citizenId,
+    "sos:update",
+    socketPayload
+  );
+
+  emitToSOS(
+    req,
+    updatedRequest._id,
+    "sos:update",
+    socketPayload
+  );
+
+  res.json({
+    message:
+      `Your ${role} response is now ${newStatus}`,
+
+    request: {
+      ...requestObject,
+
+      responderResponse:
+        updatedResponse || null,
+    },
+  });
+};
+
+const updateResponderLocation =
+  async (req, res) => {
+    try {
+      const { id } = req.params;
+
+      if (!mongoose.isValidObjectId(id)) {
+        return res.status(404).json({
+          message: "Request not found",
+        });
+      }
+
+      const role = req.user.role;
+
+      if (!RESPONDER_ROLES.includes(role)) {
+        return res.status(403).json({
+          message:
+            "Only response services can update location",
+        });
+      }
+
+      const lat = Number(
+        req.body.latitude
+      );
+
+      const lng = Number(
+        req.body.longitude
+      );
+
+      if (
+        !Number.isFinite(lat) ||
+        !Number.isFinite(lng) ||
+        lat < -90 ||
+        lat > 90 ||
+        lng < -180 ||
+        lng > 180
+      ) {
+        return res.status(400).json({
+          message:
+            "Invalid location coordinates",
+        });
+      }
+
+      const request =
+        await EmergencyRequest.findById(id);
+
+      if (!request) {
+        return res.status(404).json({
+          message: "Request not found",
+        });
+      }
+
+      const response =
+        request.responses.find(
+          (item) =>
+            item.service === role
+        );
+
+      if (!response) {
+        return res.status(403).json({
+          message:
+            "This SOS was not sent to your service",
+        });
+      }
+
+      if (response.status !== "accepted") {
+        return res.status(400).json({
+          message:
+            "Accept the SOS before sharing your location",
+        });
+      }
+
+      response.responderLocation = {
+        type: "Point",
+        coordinates: [lng, lat],
+      };
+
+      response.responderLocationUpdatedAt =
+        new Date();
+
+      if (
+        request.respondedByRole === role
+      ) {
+        request.responderLocation =
+          response.responderLocation;
+
+        request.responderLocationUpdatedAt =
+          response.responderLocationUpdatedAt;
+      }
+
+      await request.save();
+
+      const socketPayload = {
+        message:
+          "Responder location updated",
+
+        sosId:
+          request._id,
+
+        service: role,
+
+        responderId:
+          req.user._id,
+
+        responderName:
+          req.user.name,
+
+        latitude: lat,
+
+        longitude: lng,
+
+        location:
+          response.responderLocation,
+
+        updatedAt:
+          response.responderLocationUpdatedAt,
+      };
+
+      emitToUser(
+        req,
+        request.citizenId,
+        "sos:responder-location",
+        socketPayload
+      );
+
+      emitToSOS(
+        req,
+        request._id,
+        "sos:responder-location",
+        socketPayload
+      );
+
+      res.json({
+        message:
+          "Responder location updated",
+
+        request,
+      });
+    } catch (err) {
+      console.error(
+        "Update responder location error:",
+        err
+      );
+
+      res.status(500).json({
+        message: "Something went wrong",
+        error: err.message,
+      });
+    }
+  };
 
 module.exports = {
   createSOS,
   listSOS,
   myRequests,
   cancelSOS,
-  acceptSOS: setStatus("accepted"),
-  declineSOS: setStatus("declined"),
-  resolveSOS: setStatus("resolved"),
+  acceptSOS,
+  declineSOS,
+  resolveSOS,
+  updateResponderLocation,
 };

@@ -1,163 +1,505 @@
 import { useEffect, useState } from "react";
+import {
+  ArrowLeft,
+  Droplet,
+  Phone,
+  MapPin,
+  Navigation,
+  RefreshCw,
+} from "lucide-react";
 import { useNavigate } from "react-router-dom";
-import { ArrowLeft, Droplet, Phone } from "lucide-react";
-import AppNavbar from "./AppNavbar";
-import api from "../services/api";
-import { listDonors, setDonorStatus } from "../services/donors";
-import { getErrorMessage } from "../services/api";
-import "./Dashboard.css";
-import "./portal.css";
+import "./BloodDonation.css";
+import {
+  listDonors,
+  setDonorStatus,
+} from "../services/donors";
 
-const BLOOD_GROUPS = ["A+", "A-", "B+", "B-", "O+", "O-", "AB+", "AB-"];
+import BloodRequestPanel from "../components/BloodRequestPanel";
 
 function BloodDonation() {
   const navigate = useNavigate();
-  const [myBloodGroup, setMyBloodGroup] = useState("");
-  const [available, setAvailable] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [donors, setDonors] = useState([]);
-  const [filter, setFilter] = useState("");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [notice, setNotice] = useState("");
 
-  const loadDonors = async (bloodGroup) => {
+  const [bloodGroup, setBloodGroup] = useState("");
+  const [donorAvailable, setDonorAvailable] = useState(false);
+
+  const [donors, setDonors] = useState([]);
+  const [location, setLocation] = useState(null);
+
+  const [loading, setLoading] = useState(false);
+  const [locationLoading, setLocationLoading] = useState(false);
+
+  const [error, setError] = useState("");
+  const [success, setSuccess] = useState("");
+
+  const getCurrentLocation = () => {
+    return new Promise((resolve, reject) => {
+      if (!navigator.geolocation) {
+        reject(
+          new Error("Geolocation is not supported by your browser.")
+        );
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const currentLocation = {
+            latitude: position.coords.latitude,
+            longitude: position.coords.longitude,
+          };
+
+          setLocation(currentLocation);
+
+          resolve(currentLocation);
+        },
+        () => {
+          reject(
+            new Error(
+              "Location permission is required for nearby donor matching."
+            )
+          );
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0,
+        }
+      );
+    });
+  };
+
+  const loadLocation = async () => {
     try {
-      const data = await listDonors(bloodGroup);
-      setDonors(data);
+      setLocationLoading(true);
+      setError("");
+
+      await getCurrentLocation();
     } catch (err) {
-      setError(getErrorMessage(err, "Could not load donors."));
+      setError(err.message);
+    } finally {
+      setLocationLoading(false);
+    }
+  };
+
+  const loadDonors = async (currentLocation = location) => {
+    try {
+      setLoading(true);
+      setError("");
+
+      const data = await listDonors(
+        bloodGroup,
+        currentLocation
+      );
+
+      setDonors(data || []);
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          "Unable to load nearby donors."
+      );
+    } finally {
+      setLoading(false);
     }
   };
 
   useEffect(() => {
-    (async () => {
-      try {
-        const { data } = await api.get("/profile/me");
-        setMyBloodGroup(data.bloodGroup || "");
-        setAvailable(Boolean(data.donorAvailable));
-        await loadDonors("");
-      } catch (err) {
-        setError(getErrorMessage(err, "Could not load your profile."));
-      } finally {
-        setLoading(false);
-      }
-    })();
+    loadLocation();
   }, []);
 
-  const toggleAvailable = async () => {
-    if (!myBloodGroup) {
-      setError("Set your blood group in My Profile first, so donors can be matched correctly.");
-      return;
+  useEffect(() => {
+    if (location) {
+      loadDonors(location);
     }
-    setSaving(true);
-    setError("");
-    setNotice("");
+  }, [location]);
+
+  const handleRefreshLocation = async () => {
     try {
-      const next = !available;
-      await setDonorStatus(next, myBloodGroup);
-      setAvailable(next);
-      setNotice(next ? "You're now listed as an available donor." : "You're no longer listed as a donor.");
-      await loadDonors(filter);
+      setLocationLoading(true);
+      setError("");
+      setSuccess("");
+
+      const currentLocation = await getCurrentLocation();
+
+      await loadDonors(currentLocation);
+
+      setSuccess("Your location has been refreshed.");
     } catch (err) {
-      setError(getErrorMessage(err, "Could not update your donor status."));
+      setError(err.message);
     } finally {
-      setSaving(false);
+      setLocationLoading(false);
     }
   };
 
-  const applyFilter = async (bloodGroup) => {
-    setFilter(bloodGroup);
-    setLoading(true);
-    await loadDonors(bloodGroup);
-    setLoading(false);
+  const handleSearch = async () => {
+    try {
+      setError("");
+      setSuccess("");
+
+      let currentLocation = location;
+
+      if (!currentLocation) {
+        currentLocation = await getCurrentLocation();
+      }
+
+      await loadDonors(currentLocation);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const handleDonorStatus = async () => {
+    try {
+      setError("");
+      setSuccess("");
+
+      if (!bloodGroup) {
+        setError("Please select your blood group first.");
+        return;
+      }
+
+      let currentLocation = location;
+
+      if (!currentLocation) {
+        currentLocation = await getCurrentLocation();
+      }
+
+      const newStatus = !donorAvailable;
+
+      await setDonorStatus(
+        newStatus,
+        bloodGroup,
+        currentLocation
+      );
+
+      setDonorAvailable(newStatus);
+
+      setSuccess(
+        newStatus
+          ? "You are now listed as an available donor."
+          : "You are no longer listed as a donor."
+      );
+
+      await loadDonors(currentLocation);
+    } catch (err) {
+      setError(
+        err.response?.data?.message ||
+          err.message ||
+          "Unable to update donor status."
+      );
+    }
+  };
+
+  const openNavigation = (donor) => {
+    if (!location) {
+      setError("Your location is required for navigation.");
+      return;
+    }
+
+    /*
+      Donor coordinates are intentionally not exposed by the backend.
+      We therefore open a general Google Maps search instead of
+      pretending we know the donor's exact location.
+    */
+
+    const query = encodeURIComponent(
+      `${donor.name}, nearby blood donor`
+    );
+
+    window.open(
+      `https://www.google.com/maps/search/?api=1&query=${query}`,
+      "_blank"
+    );
   };
 
   return (
-    <div className="portal-page">
-      <AppNavbar showLogout />
+    <div className="blood-donation-page">
+      <div className="blood-donation-container">
 
-      <div className="portal-content">
-        <button className="portal-back" onClick={() => navigate("/dashboard")}>
-          <ArrowLeft size={14} /> Back to dashboard
+        {/* Back button */}
+
+        <button
+          className="back-button"
+          onClick={() => navigate("/dashboard")}
+        >
+          <ArrowLeft size={18} />
+          Back to Dashboard
         </button>
 
-        <div className="portal-head">
-          <div>
-            <h1>Blood donation</h1>
-            <p>Offer to donate, or find donors nearby by blood group.</p>
-          </div>
-        </div>
+        {/* Header */}
 
-        {error && <div className="portal-message error">{error}</div>}
-        {notice && <div className="portal-message success">{notice}</div>}
-
-        <div className="portal-panel" style={{ marginBottom: 20 }}>
-          <div className="portal-head" style={{ marginBottom: 0 }}>
-            <div>
-              <h1 style={{ fontSize: 18 }}>
-                {myBloodGroup ? `Your blood group: ${myBloodGroup}` : "Blood group not set"}
-              </h1>
-              <p>{available ? "You are listed as an available donor." : "You are not currently listed as a donor."}</p>
+        <div className="blood-donation-header">
+          <div className="blood-donation-title">
+            <div className="blood-donation-icon">
+              <Droplet size={28} />
             </div>
-            <button className={`portal-btn ${available ? "danger" : "primary"}`} onClick={toggleAvailable} disabled={saving}>
-              <Droplet size={16} /> {saving ? "Saving…" : available ? "Stop showing as donor" : "I'm available to donate"}
-            </button>
+
+            <div>
+              <h1>Blood Donation</h1>
+
+              <p>
+                Find nearby blood donors and help save lives.
+              </p>
+            </div>
+          </div>
+
+          <div className="radius-badge">
+            <MapPin size={16} />
+            10 km radius
           </div>
         </div>
 
-        <div className="portal-toolbar">
-          <span className="status-text" style={{ marginRight: 8 }}>Filter by blood group:</span>
-          <button className={`portal-btn ${filter === "" ? "primary" : "ghost"} small`} onClick={() => applyFilter("")}>
-            All
-          </button>
-          {BLOOD_GROUPS.map((bg) => (
+        {/* Error */}
+
+        {error && (
+          <div className="blood-alert blood-alert-error">
+            {error}
+          </div>
+        )}
+
+        {/* Success */}
+
+        {success && (
+          <div className="blood-alert blood-alert-success">
+            {success}
+          </div>
+        )}
+
+        {/* Donor controls */}
+
+        <div className="donor-control-card">
+
+          <div className="donor-control-header">
+            <div>
+              <h2>Blood Donor Search</h2>
+
+              <p>
+                Find available donors near your current location.
+              </p>
+            </div>
+
             <button
-              key={bg}
-              className={`portal-btn ${filter === bg ? "primary" : "ghost"} small`}
-              onClick={() => applyFilter(bg)}
+              className="refresh-location-button"
+              onClick={handleRefreshLocation}
+              disabled={locationLoading}
             >
-              {bg}
+              <RefreshCw
+                size={17}
+                className={
+                  locationLoading ? "spin-icon" : ""
+                }
+              />
+
+              {locationLoading
+                ? "Updating..."
+                : "Refresh Location"}
             </button>
-          ))}
+          </div>
+
+          <div className="donor-controls">
+
+            <div className="blood-field">
+              <label>Blood Group</label>
+
+              <select
+                value={bloodGroup}
+                onChange={(e) => {
+                  setBloodGroup(e.target.value);
+                }}
+              >
+                <option value="">
+                  Select blood group
+                </option>
+
+                <option value="A+">A+</option>
+                <option value="A-">A-</option>
+                <option value="B+">B+</option>
+                <option value="B-">B-</option>
+                <option value="AB+">AB+</option>
+                <option value="AB-">AB-</option>
+                <option value="O+">O+</option>
+                <option value="O-">O-</option>
+              </select>
+            </div>
+
+            <button
+              className="search-donor-button"
+              onClick={handleSearch}
+              disabled={loading}
+            >
+              {loading ? "Searching..." : "Find Donors"}
+            </button>
+
+          </div>
+
+          {/* Donor availability */}
+
+          <div className="donor-availability">
+
+            <div>
+              <h3>Become a donor</h3>
+
+              <p>
+                Make yourself visible to nearby people who
+                need your blood group.
+              </p>
+            </div>
+
+            <button
+              className={`donor-toggle ${
+                donorAvailable ? "active" : ""
+              }`}
+              onClick={handleDonorStatus}
+            >
+              <span className="toggle-circle"></span>
+
+              {donorAvailable
+                ? "Available to Donate"
+                : "Not Available"}
+            </button>
+
+          </div>
+
+          {/* Location status */}
+
+          <div className="location-status">
+
+            <MapPin size={17} />
+
+            {location ? (
+              <span>
+                Your location is available for nearby matching.
+              </span>
+            ) : (
+              <span>
+                Location is not available yet.
+              </span>
+            )}
+
+          </div>
+
         </div>
 
-        <div className="portal-panel">
-          {loading ? (
-            <div className="portal-empty">Loading donors…</div>
+        {/* Donor results */}
+
+        <div className="donor-results-section">
+
+          <div className="donor-results-header">
+
+            <div>
+              <h2>Nearby Available Donors</h2>
+
+              <p>
+                Showing available donors within 10 km.
+              </p>
+            </div>
+
+            <button
+              className="small-refresh-button"
+              onClick={() => loadDonors()}
+              disabled={loading}
+            >
+              <RefreshCw size={16} />
+
+              Refresh
+            </button>
+
+          </div>
+
+          {loading && donors.length === 0 ? (
+            <div className="blood-empty-state">
+              <Droplet size={34} />
+
+              <h3>Finding nearby donors...</h3>
+
+              <p>
+                Searching for available blood donors.
+              </p>
+            </div>
           ) : donors.length === 0 ? (
-            <div className="portal-empty">No available donors {filter ? `for ${filter}` : ""} right now.</div>
+            <div className="blood-empty-state">
+              <Droplet size={34} />
+
+              <h3>No donors found</h3>
+
+              <p>
+                Try another blood group or refresh your
+                location.
+              </p>
+            </div>
           ) : (
-            <div className="portal-table-wrap">
-              <table className="portal-table">
-                <thead>
-                  <tr>
-                    <th>Name</th>
-                    <th>Blood group</th>
-                    <th>Phone</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {donors.map((d) => (
-                    <tr key={d._id}>
-                      <td>{d.name}</td>
-                      <td><span className="portal-badge type">{d.bloodGroup}</span></td>
-                      <td>
-                        {d.phone ? (
-                          <a href={`tel:${d.phone}`} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                            <Phone size={13} /> {d.phone}
-                          </a>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="donor-grid">
+
+              {donors.map((donor) => (
+                <div
+                  className="donor-card"
+                  key={donor._id}
+                >
+
+                  <div className="donor-card-header">
+
+                    <div className="donor-avatar">
+                      {donor.name
+                        ?.charAt(0)
+                        ?.toUpperCase() || "D"}
+                    </div>
+
+                    <div>
+                      <h3>{donor.name}</h3>
+
+                      <span>
+                        Available donor
+                      </span>
+                    </div>
+
+                  </div>
+
+                  <div className="donor-blood-group">
+                    {donor.bloodGroup}
+                  </div>
+
+                  {donor.distanceKm !== undefined && (
+                    <div className="donor-distance">
+                      <MapPin size={15} />
+
+                      {donor.distanceKm} km away
+                    </div>
+                  )}
+
+                  <div className="donor-actions">
+
+                    {donor.phone && (
+                      <a
+                        className="call-donor-button"
+                        href={`tel:${donor.phone}`}
+                      >
+                        <Phone size={16} />
+                        Call
+                      </a>
+                    )}
+
+                    <button
+                      className="navigate-donor-button"
+                      onClick={() =>
+                        openNavigation(donor)
+                      }
+                    >
+                      <Navigation size={16} />
+                      Navigate
+                    </button>
+
+                  </div>
+
+                </div>
+              ))}
+
             </div>
           )}
+
         </div>
+
+        {/* NEW: Emergency blood request system */}
+
+        <BloodRequestPanel />
+
       </div>
     </div>
   );

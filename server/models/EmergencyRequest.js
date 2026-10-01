@@ -1,39 +1,289 @@
 const mongoose = require("mongoose");
 
-const emergencyRequestSchema = new mongoose.Schema(
+const geoPointSchema = new mongoose.Schema(
   {
-    citizenId: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
-    type: { type: String, enum: ["medical", "accident", "safety", "other"], default: "medical" },
-    location: {
-      type: { type: String, enum: ["Point"], default: "Point" },
-      coordinates: { type: [Number], required: true },
-    },
-    status: {
+    type: {
       type: String,
-      enum: ["pending", "accepted", "declined", "resolved", "cancelled"],
-      default: "pending",
+      enum: ["Point"],
+      required: true,
     },
-    assignedHospitalId: { type: mongoose.Schema.Types.ObjectId, ref: "Hospital" },
 
-    // Who actually responded (accepted/declined/resolved), and their ETA in minutes if given.
-    respondedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    respondedByRole: { type: String, enum: ["hospital", "police", "firestation"] },
-    etaMinutes: { type: Number },
-
-    /*
-     * Which services the civilian chose to alert — controls who sees this request.
-     * "pharmacy" isn't included: there's no pharmacy alerts inbox to respond from,
-     * so it was previously accepted here but silently dropped by createSOS.
-     */
-    targets: {
-      type: [{ type: String, enum: ["hospital", "police", "firestation"] }],
-      default: ["hospital"],
-      validate: { validator: (arr) => arr.length > 0, message: "Pick at least one service to alert" },
+    coordinates: {
+      type: [Number],
+      required: true,
+      validate: {
+        validator: function (value) {
+          return (
+            Array.isArray(value) &&
+            value.length === 2 &&
+            value.every((number) =>
+              Number.isFinite(number)
+            )
+          );
+        },
+        message:
+          "GeoJSON coordinates must contain exactly [longitude, latitude]",
+      },
     },
   },
-  { timestamps: true }
+  {
+    _id: false,
+  }
 );
 
-emergencyRequestSchema.index({ location: "2dsphere" });
+const responseSchema = new mongoose.Schema(
+  {
+    service: {
+      type: String,
+      enum: [
+        "hospital",
+        "police",
+        "firestation",
+      ],
+      required: true,
+    },
 
-module.exports = mongoose.model("EmergencyRequest", emergencyRequestSchema);
+    status: {
+      type: String,
+      enum: [
+        "pending",
+        "accepted",
+        "declined",
+        "resolved",
+      ],
+      default: "pending",
+    },
+
+    responder: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+    },
+
+    responderName: {
+      type: String,
+    },
+
+    responderOrganisation: {
+      type: String,
+    },
+
+    responderPhone: {
+      type: String,
+    },
+
+    acceptedAt: {
+      type: Date,
+    },
+
+    resolvedAt: {
+      type: Date,
+    },
+
+    etaMinutes: {
+      type: Number,
+    },
+
+    estimatedArrivalAt: {
+      type: Date,
+    },
+
+    responderLocation: {
+      type: geoPointSchema,
+      default: undefined,
+    },
+
+    responderLocationUpdatedAt: {
+      type: Date,
+    },
+  },
+  {
+    _id: false,
+  }
+);
+
+const emergencyRequestSchema =
+  new mongoose.Schema(
+    {
+      citizenId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        required: true,
+      },
+
+      type: {
+        type: String,
+        enum: [
+          "medical",
+          "accident",
+          "fire",
+          "crime",
+          "other",
+        ],
+        default: "medical",
+      },
+
+      emergencyNote: {
+        type: String,
+        trim: true,
+        maxlength: 500,
+        default: "",
+      },
+
+      location: {
+        type: geoPointSchema,
+        required: true,
+      },
+
+      status: {
+        type: String,
+        enum: [
+          "pending",
+          "accepted",
+          "resolved",
+          "cancelled",
+        ],
+        default: "pending",
+      },
+
+      assignedHospitalId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Hospital",
+        default: null,
+      },
+
+      targets: {
+        type: [String],
+        enum: [
+          "hospital",
+          "police",
+          "firestation",
+        ],
+        default: ["hospital"],
+      },
+
+      responses: {
+        type: [responseSchema],
+        default: [],
+      },
+
+      respondedBy: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "User",
+        default: null,
+      },
+
+      respondedByRole: {
+        type: String,
+        enum: [
+          "hospital",
+          "police",
+          "firestation",
+        ],
+        default: undefined,
+      },
+
+      responderName: {
+        type: String,
+        default: undefined,
+      },
+
+      responderOrganisation: {
+        type: String,
+        default: undefined,
+      },
+
+      responderPhone: {
+        type: String,
+        default: undefined,
+      },
+
+      acceptedAt: {
+        type: Date,
+        default: undefined,
+      },
+
+      etaMinutes: {
+        type: Number,
+        default: undefined,
+      },
+
+      estimatedArrivalAt: {
+        type: Date,
+        default: undefined,
+      },
+
+      responderLocation: {
+        type: geoPointSchema,
+        default: undefined,
+      },
+
+      responderLocationUpdatedAt: {
+        type: Date,
+        default: undefined,
+      },
+
+      cancelledAt: {
+        type: Date,
+        default: undefined,
+      },
+
+      resolvedAt: {
+        type: Date,
+        default: undefined,
+      },
+
+      medicalIdShared: {
+        type: Boolean,
+        default: false,
+      },
+
+      medicalSnapshot: {
+        bloodGroup: {
+          type: String,
+        },
+
+        allergies: {
+          type: [String],
+          default: [],
+        },
+
+        medicalHistory: {
+          type: [String],
+          default: [],
+        },
+
+        emergencyContacts: {
+          type: [
+            {
+              name: String,
+              phone: String,
+              relationship: String,
+            },
+          ],
+          default: [],
+        },
+      },
+
+      emergencyContactsNotified: {
+        type: Boolean,
+        default: false,
+      },
+    },
+    {
+      timestamps: true,
+    }
+  );
+
+emergencyRequestSchema.index({
+  location: "2dsphere",
+});
+
+emergencyRequestSchema.index({
+  "responses.responderLocation": "2dsphere",
+});
+
+module.exports =
+  mongoose.model(
+    "EmergencyRequest",
+    emergencyRequestSchema
+  );
