@@ -1,5 +1,11 @@
-import { useState, useEffect } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+} from "react";
+
 import { useNavigate } from "react-router-dom";
+
 import {
   User,
   Hospital,
@@ -39,10 +45,12 @@ import {
 } from "../services/announcements";
 
 import AppNavbar from "./AppNavbar";
+
 import SOSRealtime from "../components/SOSRealtime";
 
 import "./Dashboard.css";
 import "./portal.css";
+
 
 const FEATURES = {
   civilian: [
@@ -52,48 +60,56 @@ const FEATURES = {
       desc: "Every alert you've sent, with live status and the option to cancel.",
       path: "/sos-history",
     },
+
     {
       icon: FileHeart,
       title: "Health Records",
       desc: "Your medical reports, vitals and documents in one place.",
       path: "/health-records",
     },
+
     {
       icon: HeartPulse,
       title: "Medical ID",
       desc: "Emergency-ready summary, vitals trends, and who's viewed your records.",
       path: "/medical-id",
     },
+
     {
       icon: User,
       title: "My Profile",
       desc: "Blood group, medical history, allergies, and emergency contacts.",
       path: "/profile",
     },
+
     {
       icon: Hospital,
       title: "Find Hospitals",
       desc: "Search nearby hospitals with bed and ambulance availability.",
       path: "/find-hospitals",
     },
+
     {
       icon: ShieldCheck,
       title: "Role & Account",
       desc: "Switch to civilian, hospital, police, fire station or pharmacy.",
       path: "/settings/role",
     },
+
     {
       icon: Droplet,
       title: "Blood Donation",
       desc: "Find or offer blood donations by blood group, nearby.",
       path: "/blood-donation",
     },
+
     {
       icon: Package,
       title: "Find Pharmacies",
       desc: "Check medicine stock nearby and request what you need.",
       path: "/find-pharmacies",
     },
+
     {
       icon: Bot,
       title: "AI First-Aid Assistant",
@@ -110,6 +126,7 @@ const FEATURES = {
       path: "/police/alerts",
       tab: "alerts",
     },
+
     {
       icon: Map,
       title: "Coverage Map",
@@ -117,6 +134,7 @@ const FEATURES = {
       path: "/police/alerts",
       tab: "map",
     },
+
     {
       icon: ClipboardList,
       title: "Incident Reports",
@@ -124,12 +142,14 @@ const FEATURES = {
       path: "/police/alerts",
       tab: "reports",
     },
+
     {
       icon: Building2,
       title: "Organisation Profile",
       desc: "Logo, hours, service radius, and staff accounts.",
       path: "/org-profile",
     },
+
     {
       icon: ShieldCheck,
       title: "Role & Account",
@@ -145,24 +165,28 @@ const FEATURES = {
       desc: "Look up a patient by phone and file medical reports.",
       path: "/hospital/patients",
     },
+
     {
       icon: Ambulance,
       title: "Incoming Patients",
       desc: "Patients heading your way from SOS alerts.",
       path: "/hospital/incoming",
     },
+
     {
       icon: BedDouble,
       title: "Bed Availability",
       desc: "Keep your bed and ambulance counts up to date.",
       path: "/hospital/beds",
     },
+
     {
       icon: Building2,
       title: "Organisation Profile",
       desc: "Logo, hours, service radius, and staff accounts.",
       path: "/org-profile",
     },
+
     {
       icon: ShieldCheck,
       title: "Role & Account",
@@ -179,6 +203,7 @@ const FEATURES = {
       path: "/firestation/alerts",
       tab: "alerts",
     },
+
     {
       icon: Truck,
       title: "Fleet Status",
@@ -186,6 +211,7 @@ const FEATURES = {
       path: "/firestation/alerts",
       tab: "fleet",
     },
+
     {
       icon: Map,
       title: "Coverage Map",
@@ -193,12 +219,14 @@ const FEATURES = {
       path: "/firestation/alerts",
       tab: "map",
     },
+
     {
       icon: Building2,
       title: "Organisation Profile",
       desc: "Logo, hours, service radius, and staff accounts.",
       path: "/org-profile",
     },
+
     {
       icon: ShieldCheck,
       title: "Role & Account",
@@ -215,6 +243,7 @@ const FEATURES = {
       path: "/pharmacy/stock",
       tab: "stock",
     },
+
     {
       icon: Clock,
       title: "Hours & Availability",
@@ -222,6 +251,7 @@ const FEATURES = {
       path: "/pharmacy/stock",
       tab: "stock",
     },
+
     {
       icon: Inbox,
       title: "Requests",
@@ -229,12 +259,14 @@ const FEATURES = {
       path: "/pharmacy/stock",
       tab: "requests",
     },
+
     {
       icon: Building2,
       title: "Organisation Profile",
       desc: "Logo, service radius, and staff accounts.",
       path: "/org-profile",
     },
+
     {
       icon: ShieldCheck,
       title: "Role & Account",
@@ -250,12 +282,14 @@ const FEATURES = {
       desc: "Approve or reject organisation account requests.",
       path: "/admin",
     },
+
     {
       icon: Users,
       title: "All Accounts",
       desc: "Browse every account registered on LifeLink.",
       path: "/admin",
     },
+
     {
       icon: ShieldCheck,
       title: "Role & Account",
@@ -265,10 +299,12 @@ const FEATURES = {
   ],
 };
 
+
 const normaliseRole = (role) =>
   role === "citizen" || !role
     ? "civilian"
     : role;
+
 
 function Dashboard() {
   const navigate = useNavigate();
@@ -278,7 +314,10 @@ function Dashboard() {
   );
 
   const role = normaliseRole(user.role);
-  const status = user.roleStatus || "approved";
+
+  const status =
+    user.roleStatus || "approved";
+
 
   const [sosLoading, setSosLoading] =
     useState(false);
@@ -305,6 +344,44 @@ function Dashboard() {
   const [medicalIdShared, setMedicalIdShared] =
     useState(false);
 
+  // Emergency Voice
+
+  const [isRecordingVoice, setIsRecordingVoice] =
+    useState(false);
+
+  const [voiceAudioBase64, setVoiceAudioBase64] =
+    useState("");
+
+  const [voiceContentType, setVoiceContentType] =
+    useState("audio/webm");
+
+  const [voiceDuration, setVoiceDuration] =
+    useState(0);
+
+  const [voiceTranscript, setVoiceTranscript] =
+    useState("");
+
+  const [voiceError, setVoiceError] =
+    useState("");
+
+  const mediaRecorderRef =
+    useRef(null);
+
+  const audioChunksRef =
+    useRef([]);
+
+  const voiceStartedAtRef =
+    useRef(null);
+
+  const speechRecognitionRef =
+    useRef(null);
+
+  const voiceTranscriptRef =
+    useRef("");
+
+  const voiceStopTimerRef =
+    useRef(null);
+
   const [verifySending, setVerifySending] =
     useState(false);
 
@@ -316,8 +393,7 @@ function Dashboard() {
 
   const [sosRealtimeNotice, setSosRealtimeNotice] =
     useState(null);
-
-  const handleSOSRealtimeNotification = (
+      const handleSOSRealtimeNotification = (
     notification
   ) => {
     setSosRealtimeNotice(notification);
@@ -326,6 +402,324 @@ function Dashboard() {
       setSosRealtimeNotice(null);
     }, 6000);
   };
+
+
+  // Start emergency voice recording
+  const startVoiceRecording = async () => {
+    setVoiceError("");
+    setVoiceTranscript("");
+    setVoiceAudioBase64("");
+    setVoiceDuration(0);
+
+    voiceTranscriptRef.current = "";
+
+    if (voiceStopTimerRef.current) {
+      window.clearTimeout(
+        voiceStopTimerRef.current
+      );
+
+      voiceStopTimerRef.current = null;
+    }
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setVoiceError(
+        "Voice recording is not supported in this browser."
+      );
+      return;
+    }
+
+    try {
+      const stream =
+        await navigator.mediaDevices.getUserMedia({
+          audio: true,
+        });
+
+      const mimeTypes = [
+        "audio/webm;codecs=opus",
+        "audio/webm",
+        "audio/mp4",
+      ];
+
+      const supportedMimeType =
+        mimeTypes.find((type) =>
+          MediaRecorder.isTypeSupported(type)
+        ) || "";
+
+      const recorder = supportedMimeType
+        ? new MediaRecorder(stream, {
+            mimeType: supportedMimeType,
+          })
+        : new MediaRecorder(stream);
+
+      mediaRecorderRef.current =
+        recorder;
+
+      audioChunksRef.current = [];
+
+      voiceStartedAtRef.current =
+        Date.now();
+
+      setVoiceContentType(
+        recorder.mimeType ||
+          "audio/webm"
+      );
+
+      recorder.ondataavailable = (
+        event
+      ) => {
+        if (event.data?.size > 0) {
+          audioChunksRef.current.push(
+            event.data
+          );
+        }
+      };
+
+      recorder.onstop = () => {
+        const audioBlob = new Blob(
+          audioChunksRef.current,
+          {
+            type:
+              recorder.mimeType ||
+              "audio/webm",
+          }
+        );
+
+        const reader =
+          new FileReader();
+
+        reader.onloadend = () => {
+          const result =
+            reader.result || "";
+
+          const base64 =
+            typeof result === "string"
+              ? result.split(",")[1] || ""
+              : "";
+
+          setVoiceAudioBase64(
+            base64
+          );
+        };
+
+        reader.readAsDataURL(
+          audioBlob
+        );
+
+        stream
+          .getTracks()
+          .forEach((track) =>
+            track.stop()
+          );
+      };
+
+
+      recorder.start();
+
+      setIsRecordingVoice(true);
+
+
+      // Speech recognition
+      const SpeechRecognition =
+        window.SpeechRecognition ||
+        window.webkitSpeechRecognition;
+
+
+      if (SpeechRecognition) {
+        const recognition =
+          new SpeechRecognition();
+
+        recognition.continuous =
+          true;
+
+        recognition.interimResults =
+          true;
+
+        recognition.lang =
+          "en-IN";
+
+
+        recognition.onresult = (
+          event
+        ) => {
+          let transcript = "";
+
+          for (
+            let i = 0;
+            i < event.results.length;
+            i++
+          ) {
+            transcript +=
+              event.results[i][0]
+                .transcript + " ";
+          }
+
+          transcript =
+            transcript.trim();
+
+          if (transcript) {
+            voiceTranscriptRef.current =
+              transcript;
+
+            setVoiceTranscript(
+              transcript
+            );
+          }
+        };
+
+
+        recognition.onerror = (
+          event
+        ) => {
+          console.log(
+            "Speech recognition:",
+            event.error
+          );
+        };
+
+
+        recognition.onend = () => {
+          if (
+            mediaRecorderRef.current
+              ?.state === "recording"
+          ) {
+            try {
+              recognition.start();
+            } catch {
+              // Recognition may already be starting.
+            }
+          }
+        };
+
+
+        speechRecognitionRef.current =
+          recognition;
+
+
+        try {
+          recognition.start();
+        } catch (error) {
+          console.log(
+            "Speech recognition could not start:",
+            error
+          );
+        }
+      } else {
+        setVoiceError(
+          "Speech-to-text is not supported in this browser. Your voice recording will still be saved."
+        );
+      }
+
+
+      // Automatically stop after 30 seconds
+      voiceStopTimerRef.current =
+        window.setTimeout(() => {
+          if (
+            mediaRecorderRef.current
+              ?.state === "recording"
+          ) {
+            stopVoiceRecording();
+          }
+        }, 30000);
+
+    } catch (error) {
+      console.error(
+        "Voice recording error:",
+        error
+      );
+
+      setVoiceError(
+        "Microphone permission was denied or recording could not start."
+      );
+    }
+  };
+
+
+// Stop emergency voice recording
+  const stopVoiceRecording = () => {
+    const recorder =
+      mediaRecorderRef.current;
+
+    if (
+      !recorder ||
+      recorder.state === "inactive"
+    ) {
+      return;
+    }
+
+    // Stop the 30-second timer
+    if (voiceStopTimerRef.current) {
+      window.clearTimeout(
+        voiceStopTimerRef.current
+      );
+
+      voiceStopTimerRef.current = null;
+    }
+
+    // Calculate recording duration
+    const startedAt =
+      voiceStartedAtRef.current;
+
+    const duration = startedAt
+      ? Math.min(
+          30,
+          Math.max(
+            1,
+            Math.round(
+              (Date.now() - startedAt) /
+                1000
+            )
+          )
+        )
+      : 0;
+
+    setVoiceDuration(duration);
+
+    // Stop speech recognition
+    if (speechRecognitionRef.current) {
+      try {
+        speechRecognitionRef.current.stop();
+      } catch {
+        // Ignore recognition stop errors.
+      }
+
+      speechRecognitionRef.current =
+        null;
+    }
+
+    // Keep the final transcript
+    if (voiceTranscriptRef.current) {
+      setVoiceTranscript(
+        voiceTranscriptRef.current
+      );
+    }
+
+    // Stop audio recording
+    recorder.stop();
+
+    setIsRecordingVoice(false);
+  };
+
+
+  useEffect(() => {
+    return () => {
+      if (
+        mediaRecorderRef.current &&
+        mediaRecorderRef.current.state !==
+          "inactive"
+      ) {
+        mediaRecorderRef.current.stop();
+      }
+
+      if (speechRecognitionRef.current) {
+        try {
+          speechRecognitionRef.current.stop();
+        } catch {
+          // Ignore cleanup errors.
+        }
+      }
+    };
+  }, []);
+
 
   useEffect(() => {
     (async () => {
@@ -349,30 +743,33 @@ function Dashboard() {
     })();
   }, []);
 
-  const handleResendVerification = async () => {
-    setVerifySending(true);
-    setVerifyNotice("");
 
-    try {
-      const data =
-        await resendVerification();
+  const handleResendVerification =
+    async () => {
+      setVerifySending(true);
+      setVerifyNotice("");
 
-      setVerifyNotice(
-        data.verifyUrl
-          ? `Verification link: ${data.verifyUrl}`
-          : "Verification email sent — check your inbox."
-      );
-    } catch (err) {
-      setVerifyNotice(
-        getErrorMessage(
-          err,
-          "Could not send verification email."
-        )
-      );
-    } finally {
-      setVerifySending(false);
-    }
-  };
+      try {
+        const data =
+          await resendVerification();
+
+        setVerifyNotice(
+          data.verifyUrl
+            ? `Verification link: ${data.verifyUrl}`
+            : "Verification email sent — check your inbox."
+        );
+      } catch (err) {
+        setVerifyNotice(
+          getErrorMessage(
+            err,
+            "Could not send verification email."
+          )
+        );
+      } finally {
+        setVerifySending(false);
+      }
+    };
+
 
   const toggleTarget = (target) => {
     setSosTargets((prev) =>
@@ -383,8 +780,7 @@ function Dashboard() {
         : [...prev, target]
     );
   };
-
-  const handleSOS = () => {
+    const handleSOS = () => {
     setSosError("");
     setSosResult(null);
 
@@ -422,10 +818,29 @@ function Dashboard() {
               emergencyNote:
                 sosNote.trim(),
               medicalIdShared,
+
+              // Emergency Voice
+              voiceBase64:
+                voiceAudioBase64 || undefined,
+
+              voiceContentType:
+                voiceAudioBase64
+                  ? voiceContentType
+                  : undefined,
+
+              voiceDuration:
+                voiceAudioBase64
+                  ? voiceDuration
+                  : undefined,
+
+              voiceTranscript:
+                voiceTranscript.trim() ||
+                undefined,
             }
           );
 
           setSosResult(res.data);
+
         } catch (err) {
           setSosError(
             err.response?.data?.message ||
@@ -435,6 +850,7 @@ function Dashboard() {
           setSosLoading(false);
         }
       },
+
       () => {
         setSosError(
           "Location access denied. Please allow location to use SOS."
@@ -442,6 +858,7 @@ function Dashboard() {
 
         setSosLoading(false);
       },
+
       {
         enableHighAccuracy: true,
         timeout: 10000,
@@ -450,8 +867,18 @@ function Dashboard() {
     );
   };
 
+
+  const clearVoiceRecording = () => {
+    setVoiceAudioBase64("");
+    setVoiceTranscript("");
+    setVoiceDuration(0);
+    setVoiceError("");
+  };
+
+
   const cards =
     FEATURES[role] || FEATURES.civilian;
+
 
   const isPending =
     status === "pending";
@@ -459,18 +886,24 @@ function Dashboard() {
   const isRejected =
     status === "rejected";
 
+
   return (
     <div className="dash-wrapper">
+
       <AppNavbar showLogout />
 
+
       {/* Real-time SOS listener */}
+
       <SOSRealtime
         onNotification={
           handleSOSRealtimeNotification
         }
       />
 
+
       {/* Real-time SOS notification */}
+
       {sosRealtimeNotice && (
         <div
           className="portal-message success"
@@ -498,10 +931,13 @@ function Dashboard() {
         </div>
       )}
 
+
       <div className="dash-content">
 
         {/* Welcome */}
+
         <div className="dash-welcome">
+
           <h1>
             Welcome back,{" "}
             {user.name || "there"}
@@ -511,10 +947,15 @@ function Dashboard() {
             {user.orgName
               ? `${user.orgName} · `
               : ""}
+
             {roleLabel(user.role)} account
           </p>
+
         </div>
-                {/* Announcements */}
+
+
+        {/* Announcements */}
+
         {announcements.map((a) => (
           <div
             key={a._id}
@@ -527,7 +968,9 @@ function Dashboard() {
           </div>
         ))}
 
+
         {/* Pending / Rejected role */}
+
         {(isPending || isRejected) && (
           <div
             className="portal-panel"
@@ -535,6 +978,7 @@ function Dashboard() {
               marginBottom: 24,
             }}
           >
+
             <div
               className="portal-message error"
               style={{
@@ -558,10 +1002,13 @@ function Dashboard() {
                 ? "View request / switch to a different role"
                 : "Request a different role"}
             </button>
+
           </div>
         )}
 
+
         {/* Email verification */}
+
         {!user.emailVerified && (
           <div
             className="portal-message error"
@@ -586,6 +1033,7 @@ function Dashboard() {
                 : "Resend verification email"}
             </button>
 
+
             {verifyNotice && (
               <div
                 style={{
@@ -596,13 +1044,18 @@ function Dashboard() {
                 {verifyNotice}
               </div>
             )}
+
           </div>
         )}
 
+
         {/* Civilian SOS */}
+
         {role === "civilian" && (
           <div className="sos-card">
+
             <div className="sos-text">
+
               <h2>
                 In an emergency?
               </h2>
@@ -613,26 +1066,34 @@ function Dashboard() {
                 and send your live location.
               </p>
 
+
               {/* SOS targets */}
+
               <div className="sos-targets">
+
                 {[
                   {
                     value: "hospital",
                     label: "Hospital",
                   },
+
                   {
                     value: "police",
                     label: "Police",
                   },
+
                   {
                     value: "firestation",
                     label: "Fire Station",
                   },
+
                 ].map((target) => (
+
                   <label
                     key={target.value}
                     className="sos-target-option"
                   >
+
                     <input
                       type="checkbox"
                       checked={sosTargets.includes(
@@ -646,9 +1107,13 @@ function Dashboard() {
                     />
 
                     {target.label}
+
                   </label>
+
                 ))}
+
               </div>
+
 
               <div
                 style={{
@@ -657,8 +1122,11 @@ function Dashboard() {
                   marginTop: 16,
                 }}
               >
+
                 {/* Emergency type */}
+
                 <div>
+
                   <label
                     style={{
                       display: "block",
@@ -668,6 +1136,7 @@ function Dashboard() {
                   >
                     Emergency type
                   </label>
+
 
                   <select
                     value={sosType}
@@ -686,6 +1155,7 @@ function Dashboard() {
                         "var(--card-bg, white)",
                     }}
                   >
+
                     <option value="medical">
                       Medical Emergency
                     </option>
@@ -705,11 +1175,16 @@ function Dashboard() {
                     <option value="other">
                       Other
                     </option>
+
                   </select>
+
                 </div>
 
+
                 {/* Emergency note */}
+
                 <div>
+
                   <label
                     style={{
                       display: "block",
@@ -719,6 +1194,7 @@ function Dashboard() {
                   >
                     Emergency note
                   </label>
+
 
                   <textarea
                     value={sosNote}
@@ -752,9 +1228,174 @@ function Dashboard() {
                   >
                     {sosNote.length}/500
                   </div>
+
+                </div>
+                                {/* Emergency Voice */}
+
+                <div>
+
+                  <label
+                    style={{
+                      display: "block",
+                      marginBottom: 6,
+                      fontWeight: 600,
+                    }}
+                  >
+                    Emergency Voice
+                  </label>
+
+                  <div
+                    style={{
+                      display: "flex",
+                      flexWrap: "wrap",
+                      gap: 10,
+                      alignItems: "center",
+                    }}
+                  >
+
+                    {!isRecordingVoice ? (
+                      <button
+                        type="button"
+                        className="portal-btn primary"
+                        onClick={
+                          startVoiceRecording
+                        }
+                      >
+                        🎙️ Record Voice
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="portal-btn"
+                        onClick={
+                          stopVoiceRecording
+                        }
+                      >
+                        🔴 Stop Recording
+                      </button>
+                    )}
+
+                    {voiceAudioBase64 &&
+                      !isRecordingVoice && (
+                        <button
+                          type="button"
+                          className="portal-back"
+                          onClick={
+                            clearVoiceRecording
+                          }
+                        >
+                          Clear Voice
+                        </button>
+                      )}
+
+                  </div>
+
+
+                  {isRecordingVoice && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        fontSize: 13,
+                        fontWeight: 600,
+                      }}
+                    >
+                      🔴 Recording emergency
+                      voice... Maximum 30
+                      seconds.
+                    </div>
+                  )}
+
+
+                  {voiceDuration > 0 && (
+                    <div
+                      style={{
+                        marginTop: 6,
+                        fontSize: 12,
+                        opacity: 0.7,
+                      }}
+                    >
+                      Recording duration:{" "}
+                      {voiceDuration} seconds
+                    </div>
+                  )}
+                  {voiceAudioBase64 &&
+  !isRecordingVoice && (
+    <div
+      style={{
+        marginTop: 12,
+        padding: 12,
+        border: "1px solid var(--border-color)",
+        borderRadius: 10,
+        background: "var(--card-bg, white)",
+      }}
+    >
+      <strong
+        style={{
+          display: "block",
+          marginBottom: 8,
+        }}
+      >
+        🎧 Recorded Emergency Voice
+      </strong>
+
+      <audio
+        controls
+        preload="metadata"
+        src={`data:${
+          voiceContentType || "audio/webm"
+        };base64,${voiceAudioBase64}`}
+        style={{
+          width: "100%",
+        }}
+      />
+    </div>
+  )}
+
+                  {voiceTranscript && (
+                    <div
+                      style={{
+                        marginTop: 10,
+                        padding: 10,
+                        borderRadius: 8,
+                        border:
+                          "1px solid var(--border-color)",
+                        background:
+                          "var(--card-bg, white)",
+                        fontSize: 13,
+                      }}
+                    >
+                      <strong>
+                        Voice transcript:
+                      </strong>
+
+                      <div
+                        style={{
+                          marginTop: 4,
+                        }}
+                      >
+                        {voiceTranscript}
+                      </div>
+                    </div>
+                  )}
+
+
+                  {voiceError && (
+                    <div
+                      style={{
+                        marginTop: 8,
+                        color: "#b91c1c",
+                        fontSize: 13,
+                      }}
+                    >
+                      {voiceError}
+                    </div>
+                  )}
+
                 </div>
 
+
                 {/* Medical ID */}
+
                 <label
                   className="sos-target-option"
                   style={{
@@ -763,6 +1404,7 @@ function Dashboard() {
                     gap: 8,
                   }}
                 >
+
                   <input
                     type="checkbox"
                     checked={medicalIdShared}
@@ -775,12 +1417,17 @@ function Dashboard() {
 
                   Share my Medical ID
                   with responders
+
                 </label>
+
               </div>
 
+
               {/* SOS success */}
+
               {sosResult && (
                 <div className="sos-status success">
+
                   <strong>
                     SOS sent successfully.
                   </strong>
@@ -795,6 +1442,7 @@ function Dashboard() {
                     {sosTargets.length > 0 && (
                       <>
                         <br />
+
                         Services alerted:{" "}
                         {sosTargets.join(", ")}
                       </>
@@ -803,10 +1451,21 @@ function Dashboard() {
                     {medicalIdShared && (
                       <>
                         <br />
+
                         Medical ID shared
                       </>
                     )}
+
+                    {voiceAudioBase64 && (
+                      <>
+                        <br />
+
+                        Emergency voice attached
+                      </>
+                    )}
+
                   </div>
+
 
                   {sosTargets.includes(
                     "hospital"
@@ -817,40 +1476,54 @@ function Dashboard() {
                       }}
                     >
                       Nearest hospital:{" "}
+
                       {sosResult
                         .nearestHospital
                         ?.name ||
                         "None found, but your alert was recorded."}
                     </div>
                   )}
+
                 </div>
               )}
 
+
               {/* SOS error */}
+
               {sosError && (
                 <div className="sos-status error">
                   {sosError}
                 </div>
               )}
+
             </div>
 
+
             {/* SOS button */}
+
             <button
               className="sos-button"
               onClick={handleSOS}
               disabled={sosLoading}
             >
+
               <Siren size={22} />
 
               {sosLoading
                 ? "Sending..."
                 : "SOS"}
+
             </button>
+
           </div>
         )}
-                {/* Feature cards */}
+
+
+        {/* Feature cards */}
+
         {!isPending && !isRejected && (
           <div className="dash-grid">
+
             {cards.map(
               ({
                 icon: Icon,
@@ -860,13 +1533,15 @@ function Dashboard() {
                 note,
                 tab,
               }) => (
+
                 <div
                   className="dash-card"
                   key={title}
                   style={
                     path
                       ? {
-                          cursor: "pointer",
+                          cursor:
+                            "pointer",
                         }
                       : undefined
                   }
@@ -886,6 +1561,7 @@ function Dashboard() {
                       : undefined
                   }
                 >
+
                   <div className="icon-circle">
                     <Icon size={19} />
                   </div>
@@ -905,14 +1581,20 @@ function Dashboard() {
                       {note}
                     </span>
                   )}
+
                 </div>
+
               )
             )}
+
           </div>
         )}
-              </div>
+
+      </div>
+
     </div>
   );
 }
+
 
 export default Dashboard;

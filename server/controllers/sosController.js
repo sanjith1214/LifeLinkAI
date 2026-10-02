@@ -4,6 +4,10 @@ const EmergencyRequest = require("../models/EmergencyRequest");
 const Hospital = require("../models/Hospital");
 const User = require("../models/User");
 
+const {
+  analyzeEmergency,
+} = require("../services/emergencyIntelligence");
+
 const VALID_TARGETS = [
   "hospital",
   "police",
@@ -178,10 +182,13 @@ const createSOS = async (req, res) => {
         );
 
     const socketPayload = {
-      message: "New emergency SOS received",
+      message:
+        "New emergency SOS received",
+
       request: populatedRequest,
     };
 
+    // Send SOS to responders immediately
     for (const target of finalTargets) {
       emitToRole(
         req,
@@ -191,6 +198,7 @@ const createSOS = async (req, res) => {
       );
     }
 
+    // Send SOS response immediately
     res.status(201).json({
       message:
         "SOS request created successfully",
@@ -202,6 +210,116 @@ const createSOS = async (req, res) => {
           ? nearestHospital ||
             "No hospital is registered on the platform yet"
           : "Hospital was not alerted for this request",
+    });
+
+    // Run AI separately so it does not delay the SOS
+    setImmediate(async () => {
+      try {
+        const analysis =
+          await analyzeEmergency({
+            type:
+              emergencyRequest.type,
+
+            emergencyNote:
+              emergencyRequest.emergencyNote,
+
+            bloodGroup:
+              medicalSnapshot?.bloodGroup,
+
+            allergies:
+              medicalSnapshot?.allergies,
+
+            medicalHistory:
+              medicalSnapshot?.medicalHistory,
+
+            targets:
+              finalTargets,
+          });
+
+        if (!analysis) {
+          console.log(
+            "Emergency intelligence was not generated."
+          );
+          return;
+        }
+
+        const updatedRequest =
+          await EmergencyRequest.findById(
+            emergencyRequest._id
+          );
+
+        if (!updatedRequest) {
+          return;
+        }
+
+        updatedRequest.emergencyIntelligence = {
+          severity:
+            analysis.severity,
+
+          summary:
+            analysis.summary,
+
+          recommendedServices:
+            analysis.recommendedServices || [],
+
+          resourceNeeds:
+            analysis.resourceNeeds || [],
+
+          responderInstructions:
+            analysis.responderInstructions || [],
+
+          analyzedAt: new Date(),
+        };
+
+        await updatedRequest.save();
+
+        const intelligencePayload = {
+          message:
+            "Emergency intelligence analysis completed",
+
+          sosId:
+            updatedRequest._id,
+
+          intelligence:
+            updatedRequest.emergencyIntelligence,
+        };
+
+        // Send AI intelligence to responders
+        for (const target of finalTargets) {
+          emitToRole(
+            req,
+            target,
+            "sos:intelligence",
+            intelligencePayload
+          );
+        }
+
+        // Send AI intelligence to the citizen
+        emitToUser(
+          req,
+          updatedRequest.citizenId,
+          "sos:intelligence",
+          intelligencePayload
+        );
+
+        // Send AI intelligence to the SOS room
+        emitToSOS(
+          req,
+          updatedRequest._id,
+          "sos:intelligence",
+          intelligencePayload
+        );
+
+        console.log(
+          "Emergency intelligence generated:",
+          updatedRequest._id.toString()
+        );
+      } catch (error) {
+        console.error(
+          "Background emergency intelligence error:",
+          error.message
+        );
+      }
     });
   } catch (err) {
     console.error(

@@ -53,7 +53,8 @@ app.use(
   })
 );
 
-app.use(express.json());
+// Allow short emergency voice recordings
+app.use(express.json({ limit: "3mb" }));
 
 app.use(
   "/api",
@@ -149,6 +150,8 @@ const io = new Server(httpServer, {
     credentials: true,
   },
 });
+
+app.set("io", io);
 
 setupBloodChat(io);
 setupSOSChat(io);
